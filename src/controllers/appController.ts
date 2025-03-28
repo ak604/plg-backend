@@ -39,9 +39,7 @@ export const loadAndGenerateWallets = async (req: Request, res: Response): Promi
             console.log(`User ${userId} already has a wallet address: ${user.walletAddress}`);
             res.status(200).json({
                 status: 'success',
-                message: `User ${userId} already has a wallet address. No update needed.`,
-                userId: user.userId,
-                walletAddress: user.walletAddress,
+                data: user,
             });
             return;
         }
@@ -60,11 +58,7 @@ export const loadAndGenerateWallets = async (req: Request, res: Response): Promi
 
         res.status(200).json({
             status: 'success',
-            message: `Successfully generated and saved new wallet address for user ${userId}.`,
-            userId: updatedUser.userId,
-            walletAddress: updatedUser.walletAddress,
-            createdAt: updatedUser.createdAt, // Include timestamps from the updated record
-            updatedAt: updatedUser.updatedAt,
+            data: updatedUser,
         });
 
     } catch (error: any) {
