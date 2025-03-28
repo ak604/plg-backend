@@ -1,5 +1,9 @@
 import dotenv from 'dotenv';
-import AWS from 'aws-sdk';
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
+import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
+import { fromIni } from '@aws-sdk/credential-providers';
+import { Provider } from '@aws-sdk/types'; // Import Provider type
+import { Credentials } from '@aws-sdk/client-sts'; // Import Credentials type
 
 dotenv.config();
 
@@ -14,27 +18,47 @@ if (!process.env.DYNAMODB_TABLE_NAME) {
   console.warn(`Warning: DYNAMODB_TABLE_NAME not set, defaulting to ${tableName}`);
 }
 
-// Configure AWS SDK
-const awsConfig: AWS.ConfigurationOptions = { region };
+// --- AWS SDK v3 Configuration --- 
+let credentialsProvider: Provider<Credentials> | undefined = undefined;
 
 if (profile) {
   console.log(`Using AWS profile: ${profile}`);
-  // Set credentials using the specified profile
-  awsConfig.credentials = new AWS.SharedIniFileCredentials({ profile });
+  // Use fromIni to load credentials from the specified profile
+  // This provider will automatically handle refreshing SSO credentials if needed
+  credentialsProvider = fromIni({ profile });
 } else {
-  console.log('Using default AWS credentials (environment variables, instance profile, or default profile).');
+  console.log('Using default AWS credentials provider chain (environment, instance profile, etc.).');
+  // If no profile, the DynamoDBClient will use the default provider chain
 }
 
-AWS.config.update(awsConfig);
+// Create the DynamoDB Client
+// Pass the credentials provider if a profile was specified
+const dynamoDbClient = new DynamoDBClient({
+  region,
+  credentials: credentialsProvider, // Pass the provider function or undefined
+});
 
-// Initialize DocumentClient *after* updating AWS config
-const dynamoDbClient = new AWS.DynamoDB.DocumentClient();
+// Create the DynamoDB Document Client (using marshallOptions for flexibility)
+const marshallOptions = {
+  // Whether to automatically convert empty strings, blobs, and sets to `null`.
+  convertEmptyValues: false, // Default is false
+  // Whether to remove undefined values while marshalling.
+  removeUndefinedValues: true, // Default is false - SETTING TO TRUE for convenience
+  // Whether to convert typeof object supporting Buffer into Blob type.
+  convertClassInstanceToMap: false, // Default is false
+};
+const unmarshallOptions = {
+  // Whether to return numbers as a string instead of converting them to native JavaScript numbers.
+  wrapNumbers: false, // Default is false
+};
+const translateConfig = { marshallOptions, unmarshallOptions };
+const docClient = DynamoDBDocumentClient.from(dynamoDbClient, translateConfig);
 
 export const dynamoDbConfig = {
   region,
   tableName,
-  profile, // Include profile in the exported config if needed elsewhere
-  client: dynamoDbClient,
+  profile,
+  client: docClient, // Export the DocumentClient
 };
 
 export default dynamoDbConfig; 

@@ -1,5 +1,5 @@
 import dynamoDbConfig from '../config/database';
-import { DocumentClient } from 'aws-sdk/clients/dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
 
 // Simple in-memory storage for user-wallet associations
 // In a real application, this would be replaced with a database
@@ -13,7 +13,7 @@ export interface User {
 
 class UserStore {
   private tableName: string;
-  private client: DocumentClient;
+  private client: DynamoDBDocumentClient;
 
   constructor() {
     this.tableName = dynamoDbConfig.tableName;
@@ -34,14 +34,14 @@ class UserStore {
       updatedAt: timestamp,
     };
 
-    const params: DocumentClient.PutItemInput = {
+    const command = new PutCommand({
       TableName: this.tableName,
       Item: user,
-      // ConditionExpression: 'attribute_not_exists(userId)' // Optional: prevent overwriting existing users
-    };
+      // ConditionExpression: 'attribute_not_exists(userId)' // Optional: prevent overwriting
+    });
 
     try {
-      await this.client.put(params).promise();
+      await this.client.send(command);
       return user;
     } catch (error) {
       console.error('Error linking wallet in DynamoDB:', error);
@@ -51,15 +51,15 @@ class UserStore {
 
   // Get user by user ID
   async getUserById(userId: string): Promise<User | undefined> {
-    const params: DocumentClient.GetItemInput = {
+    const command = new GetCommand({
       TableName: this.tableName,
       Key: {
         userId,
       },
-    };
+    });
 
     try {
-      const result = await this.client.get(params).promise();
+      const result = await this.client.send(command);
       return result.Item as User | undefined;
     } catch (error) {
       console.error('Error getting user by ID from DynamoDB:', error);
@@ -70,16 +70,16 @@ class UserStore {
   // Get user by wallet address
   async getUserByWalletAddress(walletAddress: string): Promise<User | undefined> {
     console.warn('getUserByWalletAddress performs a DynamoDB scan, which can be inefficient and costly. Consider adding a Global Secondary Index (GSI) on walletAddress.');
-    const params: DocumentClient.ScanInput = {
+    const command = new ScanCommand({
       TableName: this.tableName,
       FilterExpression: 'walletAddress = :walletAddress',
       ExpressionAttributeValues: {
         ':walletAddress': walletAddress,
       },
-    };
+    });
 
     try {
-      const result = await this.client.scan(params).promise();
+      const result = await this.client.send(command);
       if (result.Items && result.Items.length > 0) {
         return result.Items[0] as User;
       }
@@ -104,12 +104,10 @@ class UserStore {
   // Get all users (for testing purposes)
   async getAllUsers(): Promise<User[]> {
     console.warn('getAllUsers performs a DynamoDB scan, which can be very inefficient and costly for large tables.');
-    const params: DocumentClient.ScanInput = {
-      TableName: this.tableName,
-    };
+    const command = new ScanCommand({ TableName: this.tableName });
 
     try {
-      const result = await this.client.scan(params).promise();
+      const result = await this.client.send(command);
       return (result.Items as User[]) || [];
     } catch (error) {
       console.error('Error getting all users from DynamoDB:', error);
@@ -120,7 +118,14 @@ class UserStore {
   // Clear all users (for testing purposes)
   async clearAllUsers(): Promise<void> {
     console.warn('clearAllUsers is intended for testing only and is very inefficient. It scans and deletes items one by one.');
-    const users = await this.getAllUsers();
+    let users: User[];
+    try {
+       users = await this.getAllUsers();
+    } catch(error) {
+      console.error("Failed to get users for clearing:", error);
+      return; // Exit if we can't get users
+    }
+   
     const deleteRequests = users.map(user => ({
       DeleteRequest: {
         Key: { userId: user.userId },
@@ -128,26 +133,32 @@ class UserStore {
     }));
 
     if (deleteRequests.length === 0) {
+      console.log('No users found to clear.');
       return;
     }
 
-    // BatchWriteItem can handle up to 25 requests at a time
+    // BatchWriteCommand can handle up to 25 requests at a time
     for (let i = 0; i < deleteRequests.length; i += 25) {
       const batch = deleteRequests.slice(i, i + 25);
-      const params: DocumentClient.BatchWriteItemInput = {
+      const command = new BatchWriteCommand({
         RequestItems: {
           [this.tableName]: batch,
         },
-      };
+      });
       try {
-        await this.client.batchWrite(params).promise();
+        const output = await this.client.send(command);
+        // Handle potential unprocessed items from the output if necessary
+        if (output.UnprocessedItems && output.UnprocessedItems[this.tableName] && output.UnprocessedItems[this.tableName].length > 0) {
+           console.warn(`Warning: ${output.UnprocessedItems[this.tableName].length} items were not processed in batch delete.`);
+           // Implement retry logic here if needed
+        }
       } catch (error) {
-        console.error('Error clearing users in DynamoDB:', error);
-        // Handle potential unprocessed items if needed
-        throw new Error(`Failed to clear all users: ${(error as Error).message}`);
+        console.error('Error clearing users batch in DynamoDB:', error);
+        // Decide if you want to stop or continue on batch error
+        throw new Error(`Failed to clear users batch: ${(error as Error).message}`);
       }
     }
-    console.log(`Cleared ${deleteRequests.length} users.`);
+    console.log(`Attempted to clear ${deleteRequests.length} users.`);
   }
 }
 
