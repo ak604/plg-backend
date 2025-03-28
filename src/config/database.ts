@@ -3,7 +3,6 @@ import { DynamoDBClient } from '@aws-sdk/client-dynamodb';
 import { DynamoDBDocumentClient } from '@aws-sdk/lib-dynamodb';
 import { fromIni } from '@aws-sdk/credential-providers';
 import { Provider } from '@aws-sdk/types'; // Import Provider type
-import { Credentials } from '@aws-sdk/client-sts'; // Import Credentials type
 
 dotenv.config();
 
@@ -19,7 +18,7 @@ if (!process.env.DYNAMODB_TABLE_NAME) {
 }
 
 // --- AWS SDK v3 Configuration --- 
-let credentialsProvider: Provider<Credentials> | undefined = undefined;
+let credentialsProvider: Provider<any> | undefined = undefined;
 
 if (profile) {
   console.log(`Using AWS profile: ${profile}`);
