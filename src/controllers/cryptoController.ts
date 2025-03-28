@@ -39,7 +39,7 @@ export const rewardTokens = async (req: Request, res: Response): Promise<void> =
     }
 
     // Get user information to find the wallet address
-    const user = userStore.getUserById(userId as string);
+    const user = await userStore.getUserById(userId as string);
     if (!user) {
       res.status(404).json({
         status: 'error',
@@ -48,18 +48,32 @@ export const rewardTokens = async (req: Request, res: Response): Promise<void> =
       return;
     }
 
-    // Check if admin has sufficient balance
-    const hasSufficientBalance = await blockchainService.hasAdminSufficientBalance(
-      token as string,
-      amount as string
-    );
+    // Verify token contract exists and implements required ERC20 methods
+    try {
+      // Check if admin has sufficient balance
+      const hasSufficientBalance = await blockchainService.hasAdminSufficientBalance(
+        token as string,
+        amount as string
+      );
 
-    if (!hasSufficientBalance) {
-      res.status(400).json({
-        status: 'error',
-        message: 'Insufficient tokens in admin wallet',
-      });
-      return;
+      if (!hasSufficientBalance) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Insufficient tokens in admin wallet',
+        });
+        return;
+      }
+    } catch (error: any) {
+      // Handle specific token contract errors
+      if (error.message.includes("doesn't support the ERC20 standard") || 
+          error.message.includes("No contract deployed")) {
+        res.status(400).json({
+          status: 'error',
+          message: `Invalid token contract at ${token}: ${error.message}`,
+        });
+        return;
+      }
+      throw error; // Re-throw for general error handling
     }
 
     // Transfer tokens from admin wallet to user wallet
@@ -69,7 +83,7 @@ export const rewardTokens = async (req: Request, res: Response): Promise<void> =
       amount as string
     );
 
-    // Get token info for the response
+    // Get token info for the response (with fallbacks for non-standard tokens)
     const tokenInfo = await blockchainService.getTokenInfo(token as string);
 
     res.status(200).json({
@@ -80,7 +94,7 @@ export const rewardTokens = async (req: Request, res: Response): Promise<void> =
         recipient: user.walletAddress,
         amount,
         token: {
-          address: token,
+          address: token as string,
           name: tokenInfo.name,
           symbol: tokenInfo.symbol
         },
@@ -88,11 +102,23 @@ export const rewardTokens = async (req: Request, res: Response): Promise<void> =
         blockNumber: receipt.blockNumber
       },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error in rewardTokens:', error);
+    
+    // Handle specific error types
+    if (error.message.includes("doesn't support the ERC20 standard") || 
+        error.message.includes("No contract deployed") || 
+        error.message.includes("Could not retrieve user")) {
+      res.status(400).json({
+        status: 'error',
+        message: `Operation failed: ${error.message}`,
+      });
+      return;
+    }
+    
     res.status(500).json({
       status: 'error',
-      message: (error as Error).message || 'Failed to transfer tokens',
+      message: error.message || 'Failed to transfer tokens',
     });
   }
 };
@@ -125,18 +151,18 @@ export const linkWallet = async (req: Request, res: Response): Promise<void> => 
     }
 
     // Link user ID with wallet address
-    const user = userStore.linkWallet(userId, walletAddress);
+    const user = await userStore.linkWallet(userId, walletAddress);
 
     res.status(200).json({
       status: 'success',
       message: 'Wallet successfully linked to user',
       data: user,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error in linkWallet:', error);
     res.status(500).json({
       status: 'error',
-      message: (error as Error).message || 'Failed to link wallet',
+      message: error.message || 'Failed to link wallet',
     });
   }
 };
@@ -158,7 +184,7 @@ export const getUserWallet = async (req: Request, res: Response): Promise<void> 
       return;
     }
 
-    const user = userStore.getUserById(userId);
+    const user = await userStore.getUserById(userId);
     if (!user) {
       res.status(404).json({
         status: 'error',
@@ -171,11 +197,11 @@ export const getUserWallet = async (req: Request, res: Response): Promise<void> 
       status: 'success',
       data: user,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('Error in getUserWallet:', error);
     res.status(500).json({
       status: 'error',
-      message: (error as Error).message || 'Failed to get user wallet information',
+      message: error.message || 'Failed to get user wallet information',
     });
   }
 }; 

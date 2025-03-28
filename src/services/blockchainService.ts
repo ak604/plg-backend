@@ -55,14 +55,39 @@ class BlockchainService {
   async hasAdminSufficientBalance(tokenAddress: string, amount: string): Promise<boolean> {
     try {
       const tokenContract = this.getTokenContract(tokenAddress);
-      const balance = await tokenContract.balanceOf(this.adminWallet.address);
-      const decimals = await tokenContract.decimals();
+      
+      // Check if the contract has proper code at the address
+      const code = await this.provider.getCode(tokenAddress);
+      if (code === '0x') {
+        throw new Error(`No contract deployed at address ${tokenAddress}`);
+      }
+      
+      // Get balance, defaulting to 0 if balanceOf method fails
+      let balance;
+      try {
+        balance = await tokenContract.balanceOf(this.adminWallet.address);
+      } catch (error) {
+        console.error(`Token at ${tokenAddress} does not implement balanceOf() function correctly`);
+        throw new Error('Token does not implement ERC20 standard properly');
+      }
+      
+      // Get decimals with fallback to 18
+      let decimals = 18;
+      try {
+        decimals = await tokenContract.decimals();
+      } catch (error) {
+        console.warn(`Token at ${tokenAddress} does not implement decimals() function, using default: 18`);
+      }
+      
       const amountInWei = ethers.utils.parseUnits(amount, decimals);
       
       return balance.gte(amountInWei);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to check admin balance:', error);
-      throw new Error('Failed to check admin balance');
+      if (error.code === 'CALL_EXCEPTION') {
+        throw new Error(`Failed to check balance: Contract at ${tokenAddress} doesn't support the ERC20 standard properly`);
+      }
+      throw new Error(`Failed to check admin balance: ${(error as Error).message}`);
     }
   }
 
@@ -82,8 +107,13 @@ class BlockchainService {
       // Get token contract
       const tokenContract = this.getTokenContract(tokenAddress);
       
-      // Get token decimals
-      const decimals = await tokenContract.decimals();
+      // Get token decimals (with fallback to 18 if not implemented)
+      let decimals = 18;
+      try {
+        decimals = await tokenContract.decimals();
+      } catch (error) {
+        console.warn(`Token at ${tokenAddress} does not implement decimals() function, using default: 18`);
+      }
       
       // Convert amount to token units with proper decimals
       const amountInWei = ethers.utils.parseUnits(amount, decimals);
@@ -97,6 +127,18 @@ class BlockchainService {
       if (!hasSufficientBalance) {
         throw new Error('Insufficient token balance in admin wallet');
       }
+
+      // Attempt to verify if the token implements ERC20 transfer properly
+      try {
+        // Check token code
+        const code = await this.provider.getCode(tokenAddress);
+        if (code === '0x') {
+          throw new Error(`No contract deployed at address ${tokenAddress}`);
+        }
+      } catch (error) {
+        console.error('Error checking token contract:', error);
+        throw new Error(`Invalid token contract at ${tokenAddress}`);
+      }
       
       // Send the transaction
       const transaction = await tokenContract.transfer(userWalletAddress, amountInWei);
@@ -105,8 +147,12 @@ class BlockchainService {
       const receipt = await transaction.wait();
       
       return receipt;
-    } catch (error) {
+    } catch (error: any) {
       console.error('Failed to transfer tokens:', error);
+      // Provide more descriptive error messages based on error type
+      if (error.code === 'CALL_EXCEPTION') {
+        throw new Error(`Token transfer failed: Contract at ${tokenAddress} doesn't support the ERC20 standard properly`);
+      }
       throw new Error(`Token transfer failed: ${(error as Error).message}`);
     }
   }
@@ -124,11 +170,28 @@ class BlockchainService {
     try {
       const tokenContract = this.getTokenContract(tokenAddress);
       
-      const [name, symbol, decimals] = await Promise.all([
-        tokenContract.name(),
-        tokenContract.symbol(),
-        tokenContract.decimals(),
-      ]);
+      // Use try-catch for each method call in case the token doesn't implement some methods
+      let name = 'Unknown Token';
+      let symbol = 'UNKNOWN';
+      let decimals = 18; // Default to 18 decimals
+      
+      try {
+        name = await tokenContract.name();
+      } catch (error) {
+        console.warn(`Token at ${tokenAddress} does not implement name() function`);
+      }
+      
+      try {
+        symbol = await tokenContract.symbol();
+      } catch (error) {
+        console.warn(`Token at ${tokenAddress} does not implement symbol() function`);
+      }
+      
+      try {
+        decimals = await tokenContract.decimals();
+      } catch (error) {
+        console.warn(`Token at ${tokenAddress} does not implement decimals() function, using default: 18`);
+      }
       
       return { name, symbol, decimals };
     } catch (error) {

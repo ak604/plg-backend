@@ -214,5 +214,53 @@ describe('Crypto API Endpoints', () => {
       expect(response.body.status).toBe('error');
       expect(response.body.message).toContain('Insufficient');
     });
+
+    it('should return 400 if token contract is non-compliant with ERC20', async () => {
+      // First link a wallet
+      const userData = {
+        userId: 'user123',
+        walletAddress: '0x1234567890123456789012345678901234567890',
+      };
+
+      await request(app).post('/api/crypto/link-wallet').send(userData);
+
+      // Mock ERC20 standard error
+      (blockchainService.hasAdminSufficientBalance as jest.Mock).mockRejectedValueOnce(
+        new Error("doesn't support the ERC20 standard properly")
+      );
+
+      // Then try to reward tokens
+      const response = await request(app).get(
+        '/api/crypto/reward?token=0xabcdef1234567890abcdef1234567890abcdef12&amount=10&userId=user123'
+      );
+
+      expect(response.status).toBe(400);
+      expect(response.body.status).toBe('error');
+      expect(response.body.message).toContain('ERC20 standard');
+    });
+
+    it('should return 400 if token contract does not exist', async () => {
+      // First link a wallet
+      const userData = {
+        userId: 'user123',
+        walletAddress: '0x1234567890123456789012345678901234567890',
+      };
+
+      await request(app).post('/api/crypto/link-wallet').send(userData);
+
+      // Mock no contract error
+      (blockchainService.hasAdminSufficientBalance as jest.Mock).mockRejectedValueOnce(
+        new Error("No contract deployed at address")
+      );
+
+      // Then try to reward tokens
+      const response = await request(app).get(
+        '/api/crypto/reward?token=0xabcdef1234567890abcdef1234567890abcdef12&amount=10&userId=user123'
+      );
+
+      expect(response.status).toBe(400);
+      expect(response.body.status).toBe('error');
+      expect(response.body.message).toContain('No contract deployed');
+    });
   });
 }); 
