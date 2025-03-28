@@ -4,6 +4,8 @@ import morgan from 'morgan';
 import dotenv from 'dotenv';
 import swaggerUi from 'swagger-ui-express';
 import { cryptoRoutes } from './routes/cryptoRoutes';
+import appRoutes from './routes/appRoutes';
+import adminRoutes from './routes/adminRoutes';
 import swaggerSpec from './config/swagger';
 
 // Load environment variables
@@ -24,6 +26,8 @@ app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
 // Routes
 app.use('/api/crypto', cryptoRoutes);
+app.use('/api/app', appRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Serve Swagger JSON
 app.get('/swagger.json', (req, res) => {

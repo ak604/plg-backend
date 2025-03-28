@@ -1,5 +1,5 @@
 import dynamoDbConfig from '../config/database';
-import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, BatchWriteCommand } from '@aws-sdk/lib-dynamodb';
+import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, BatchWriteCommand, ScanCommandOutput, UpdateCommand } from '@aws-sdk/lib-dynamodb';
 
 // Simple in-memory storage for user-wallet associations
 // In a real application, this would be replaced with a database
@@ -7,6 +7,7 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand, ScanCommand, BatchWrite
 export interface User {
   userId: string; // Partition Key
   walletAddress: string;
+  currencyMap?: { [currency: string]: number }; // Add the currency map field (optional for existing records)
   createdAt?: string;
   updatedAt?: string;
 }
@@ -37,7 +38,6 @@ class UserStore {
     const command = new PutCommand({
       TableName: this.tableName,
       Item: user,
-      // ConditionExpression: 'attribute_not_exists(userId)' // Optional: prevent overwriting
     });
 
     try {
@@ -101,16 +101,31 @@ class UserStore {
     return /^0x[a-fA-F0-9]{40}$/.test(address);
   }
 
-  // Get all users (for testing purposes)
+  // Get ALL users (handles pagination)
   async getAllUsers(): Promise<User[]> {
     console.warn('getAllUsers performs a DynamoDB scan, which can be very inefficient and costly for large tables.');
-    const command = new ScanCommand({ TableName: this.tableName });
+    const allUsers: User[] = [];
+    let lastEvaluatedKey: Record<string, any> | undefined = undefined;
 
     try {
-      const result = await this.client.send(command);
-      return (result.Items as User[]) || [];
+      do {
+        const command = new ScanCommand({
+          TableName: this.tableName,
+          ExclusiveStartKey: lastEvaluatedKey,
+        });
+
+        const result: ScanCommandOutput = await this.client.send(command);
+
+        if (result.Items) {
+          allUsers.push(...(result.Items as User[]));
+        }
+
+        lastEvaluatedKey = result.LastEvaluatedKey;
+      } while (lastEvaluatedKey);
+
+      return allUsers;
     } catch (error) {
-      console.error('Error getting all users from DynamoDB:', error);
+      console.error('Error getting all users from DynamoDB with pagination:', error);
       throw new Error(`Could not retrieve all users: ${(error as Error).message}`);
     }
   }
@@ -159,6 +174,92 @@ class UserStore {
       }
     }
     console.log(`Attempted to clear ${deleteRequests.length} users.`);
+  }
+
+  // Atomically update the balance for a specific currency in the user's currencyMap
+  async updateCurrencyBalance(userId: string, currency: string, amountToAdd: number): Promise<User> {
+    // Input validation (amount > 0, currency not empty)
+    if (amountToAdd <= 0) { throw new Error('Amount to add must be positive.'); }
+    if (!currency || currency.trim() === '') { throw new Error('Currency symbol cannot be empty.'); }
+
+    const timestamp = new Date().toISOString();
+
+    // Define the main update command (assumes map exists initially)
+    const mainUpdateCommandInput = {
+      TableName: this.tableName,
+      Key: { userId },
+      UpdateExpression: 'ADD currencyMap.#currency :amount SET updatedAt = :timestamp',
+      ExpressionAttributeNames: { '#currency': currency },
+      ExpressionAttributeValues: { ':amount': amountToAdd, ':timestamp': timestamp },
+      ReturnValues: 'ALL_NEW' as const, // Use 'as const' for stricter typing if needed
+      // Condition: Check user exists AND the map exists for the first attempt
+      ConditionExpression: 'attribute_exists(userId) AND attribute_exists(currencyMap)',
+    };
+    const mainUpdateCommand = new UpdateCommand(mainUpdateCommandInput);
+
+    try {
+      // --- First Attempt ---
+      console.log(`Attempting to reward ${amountToAdd} ${currency} to user ${userId} (assuming currencyMap exists)`);
+      const result = await this.client.send(mainUpdateCommand);
+      if (!result.Attributes) { throw new Error('Update attempt 1 succeeded but returned no attributes.'); }
+      console.log(`Reward successful on first attempt for user ${userId}`);
+      return result.Attributes as User;
+
+    } catch (error: any) {
+      // --- Handle Conditional Check Failure ---
+      if (error.name === 'ConditionalCheckFailedException') {
+        console.log(`Conditional check failed for user ${userId}. Checking if currencyMap was missing...`);
+        // Condition failed. Check if the user actually exists.
+        const userCheck = await this.getUserById(userId);
+        if (!userCheck) {
+            // If user doesn't exist, throw the appropriate error
+             console.error(`User ${userId} not found during conditional check.`);
+             throw new Error(`User with ID ${userId} not found.`);
+        }
+
+        // If user exists, the currencyMap must be missing. Try to initialize it.
+        console.warn(`User ${userId} found but currencyMap is missing. Initializing map...`);
+        const initMapCommand = new UpdateCommand({
+          TableName: this.tableName,
+          Key: { userId },
+          UpdateExpression: 'SET currencyMap = if_not_exists(currencyMap, :emptyMap), updatedAt = :timestamp',
+          ExpressionAttributeValues: { ':emptyMap': {}, ':timestamp': timestamp },
+          ConditionExpression: 'attribute_exists(userId)', // Only need user to exist here
+        });
+
+        try {
+          await this.client.send(initMapCommand);
+          console.log(`currencyMap initialized for user ${userId}. Retrying reward...`);
+
+          // --- Retry the main update ---
+          // Now we only need to condition on the user existing.
+          const retryUpdateCommandInput = {
+             ...mainUpdateCommandInput, // Reuse most input from the first attempt
+             ConditionExpression: 'attribute_exists(userId)', // Only check user exists now
+          };
+          const retryUpdateCommand = new UpdateCommand(retryUpdateCommandInput);
+
+          const retryResult = await this.client.send(retryUpdateCommand);
+          if (!retryResult.Attributes) { throw new Error('Retry update succeeded but returned no attributes.'); }
+           console.log(`Reward successful on retry attempt for user ${userId}`);
+          return retryResult.Attributes as User;
+
+        } catch (retryError: any) {
+           // Handle errors during initialization or retry
+           console.error(`Error during currencyMap initialization or reward retry for ${userId}:`, retryError);
+           // Check if the retry failed because the user *still* doesn't exist (shouldn't happen normally)
+           if (retryError.name === 'ConditionalCheckFailedException') {
+               throw new Error(`User with ID ${userId} could not be updated (potentially deleted during operation).`);
+           }
+           throw new Error(`Failed to update balance for ${currency} for user ${userId} after attempting map initialization: ${retryError.message}`);
+        }
+      } else {
+        // --- Handle Other Errors ---
+        // It wasn't a conditional check failure, so rethrow the original error.
+        console.error(`Non-conditional error updating currency balance for user ${userId}:`, error);
+        throw new Error(`Could not update balance for ${currency} for user ${userId}: ${error.message}`);
+      }
+    }
   }
 }
 

@@ -27,7 +27,6 @@ const options: swaggerJSDoc.Options = {
       schemas: {
         User: {
           type: 'object',
-          required: ['userId', 'walletAddress'],
           properties: {
             userId: {
               type: 'string',
@@ -35,9 +34,36 @@ const options: swaggerJSDoc.Options = {
             },
             walletAddress: {
               type: 'string',
-              description: 'User Ethereum wallet address',
+              description: 'User Ethereum wallet address (if generated/linked)',
               example: '0x1234567890123456789012345678901234567890',
+              nullable: true
             },
+            currencyMap: {
+              type: 'object',
+              description: 'Map of currency balances held by the user.',
+              additionalProperties: {
+                type: 'number',
+                format: 'double',
+                description: 'Balance for a specific currency symbol',
+              },
+              example: {
+                'POINTS': 150.75,
+                'USD': 25.00
+              },
+              nullable: true
+            },
+            createdAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Timestamp when the user record was created',
+              readOnly: true,
+            },
+            updatedAt: {
+              type: 'string',
+              format: 'date-time',
+              description: 'Timestamp when the user record was last updated',
+              readOnly: true,
+            }
           },
         },
         Error: {
